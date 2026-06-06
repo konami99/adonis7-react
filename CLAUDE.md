@@ -98,42 +98,70 @@ Pages are rendered by backend controllers and passed to React components via pro
 
 ```typescript
 // Backend (controller)
-export default class HomeController {
-  async show({ inertia }: HttpContext) {
-    return inertia.render('home', { /* props */ })
+export default class SessionController {
+  async create({ inertia }: HttpContext) {
+    return inertia.render('auth/login', {})
   }
 }
 
-// Frontend (React page)
-export default function Home(props) { /* ... */ }
+// Frontend (React page at inertia/pages/auth/login.tsx)
+export default function Login(props) { /* ... */ }
 ```
 
-Pages are automatically matched to files in `inertia/pages/` (e.g., `pages/home.tsx` → `home` route).
+For routes that only render a page with no controller logic, use `renderInertia()` directly on the router:
+
+```typescript
+router.on('/').renderInertia('home', {}).as('home')
+```
+
+Pages are automatically matched to files in `inertia/pages/` (e.g., `'auth/login'` → `inertia/pages/auth/login.tsx`).
 
 ### 2. **Type-Safe Routing with Tuyau**
-Routes are type-checked through Tuyau, providing type-safe route helpers in React:
+Tuyau generates a type-safe route registry at startup. Routes are registered by name in `start/routes.ts`, and controllers are referenced via the generated `controllers` object rather than direct imports:
 
 ```typescript
-// Frontend
-<Link route="session.create">Login</Link>
+// start/routes.ts
+import { controllers } from '#generated/controllers'
+import router from '@adonisjs/core/services/router'
+
+router.get('login', [controllers.Session, 'create']).as('session.create')
+router.post('login', [controllers.Session, 'store'])
 ```
 
-Route names are defined in `start/routes.ts` using `.as('session.create')` suffixes.
-
-### 3. **Middleware Stack**
-- **Server middleware** (all requests): Static files, CORS, Vite dev server, Inertia
-- **Router middleware** (only routed requests): Body parser, session, CSRF, auth initialization
-- **Named middleware** (selectively applied): `guest`, `auth`
-
-Defined in `start/kernel.ts`.
-
-### 4. **Validation with VineJS**
-VineJS validators are defined in `app/validators/` and used in controllers:
+On the frontend, `TuyauProvider` (wrapping the app in `inertia/app.tsx`) exposes typed `<Link>` and `<Form>` components:
 
 ```typescript
+<Link route="session.create">Login</Link>
+<Link route="new_account.create">Signup</Link>
+```
+
+Route groups apply middleware to multiple routes at once:
+
+```typescript
+router.group(() => { /* routes */ }).use(middleware.guest())
+router.group(() => { /* routes */ }).use(middleware.auth())
+```
+
+### 3. **Middleware Stack**
+Defined in `start/kernel.ts`:
+
+- **Server middleware** (all requests): `container_bindings`, static files, CORS, Vite dev server, `inertia_middleware`
+- **Router middleware** (only routed requests): body parser, session, shield (CSRF), `initialize_auth`, `silent_auth`
+- **Named middleware** (selectively applied): `guest`, `auth`
+
+`silent_auth_middleware` silently resolves the current user on every routed request without throwing on unauthenticated requests — this is how `auth.user` is available in `inertia_middleware` for shared props.
+
+### 4. **Validation with VineJS**
+VineJS validators are defined in `app/validators/` and used in controllers. Shared rules can be extracted as factory functions:
+
+```typescript
+const email = () => vine.string().email().maxLength(254)
+const password = () => vine.string().minLength(8).maxLength(32)
+
 export const signupValidator = vine.create({
-  email: vine.string().email().unique({ table: 'users', column: 'email' }),
-  password: vine.string().minLength(8).confirmed(),
+  fullName: vine.string().nullable(),
+  email: email().unique({ table: 'users', column: 'email' }),
+  password: password().confirmed({ confirmationField: 'passwordConfirmation' }),
 })
 
 // In controller
@@ -149,12 +177,18 @@ const payload = await request.validateUsing(signupValidator)
 Login/logout flows in `SessionController` and `NewAccountController`.
 
 ### 6. **Data Serialization**
-Custom `ApiSerializer` in `providers/api_provider.ts` wraps API responses under a `data` key:
-```json
-{ "data": [...] }
+`providers/api_provider.ts` adds a `ctx.serialize()` method to every `HttpContext` instance. It wraps the output of a transformer under a `data` key:
+
+```typescript
+// In a controller
+return ctx.serialize(new UserTransformer(user))
+// → { data: { id: 1, fullName: "...", email: "...", initials: "..." } }
+
+// Skip wrapping when needed
+return ctx.serialize.withoutWrapping(new UserTransformer(user))
 ```
 
-Applied to transformers for consistent API response structure.
+Also handles pagination metadata from Lucid paginators.
 
 ### 7. **Frontend Layout & Flash Messages**
 `inertia/layouts/default.tsx` is the shared layout for all pages. It:
@@ -219,12 +253,12 @@ Migration files in `database/migrations/` use Lucid's schema builder.
 ## Frontend Patterns
 
 ### Shared Props
-All pages receive shared props defined in Inertia middleware (`inertia_middleware.ts`):
-- `user`: Current authenticated user (null if guest)
-- `flash`: Object with `error` and `success` messages
-- `csrf`: CSRF token for forms
+All pages receive shared props defined in `inertia_middleware.ts`:
+- `user`: Serialized authenticated user (via `UserTransformer`), or `undefined` for guests
+- `flash`: Object with `error` and `success` string messages
+- `errors`: Validation errors from the previous request
 
-Access via: `const { user, flash } = usePage().props`
+The type `Data.SharedProps` (from `@generated/data`) provides full typing. In the layout, props are accessed directly off `children.props` since the layout wraps each page component. In page components, use `usePage().props`.
 
 ### Forms
 Use the `<Form>` component from `@adonisjs/inertia/react` for automatic CSRF protection and method spoofing:
@@ -255,13 +289,13 @@ All env vars are validated in `start/env.ts` using VineJS.
 
 ## Code Generation & Hooks
 
-AdonisJS auto-generates code during initialization:
-- **Controllers index** (`@generated/controllers`): Type-safe controller imports
-- **Routes metadata** (Tuyau): Type-safe route helpers
-- **Page index** (Inertia): Automatic page → component resolution
-- **Types** (`@generated/data`): Page props types for frontend
+Three hooks run at app init (configured in `adonisrc.ts`), producing files in `.adonisjs/`:
 
-These are generated by hooks in `adonisrc.ts` and should never be edited manually.
+- **`indexEntities()`** → `.adonisjs/server/controllers.js` — the `controllers` object used in `start/routes.ts`; also generates `Data.SharedProps` type from transformer `withSharedProps`
+- **`indexPages()`** → `.adonisjs/client/` — page component index for Inertia's `resolvePageComponent`
+- **`generateRegistry()`** (Tuyau) → route type registry consumed by `TuyauProvider` for typed `<Link route="">` and `<Form route="">`
+
+Never edit files in `.adonisjs/` manually — they are overwritten on every startup.
 
 ## Testing Strategy
 
