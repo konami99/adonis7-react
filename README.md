@@ -51,6 +51,47 @@ node ace migration:rollback   # Rollback last migration
 node ace generate:migration <name>  # Create a new migration
 ```
 
+## Link Patterns
+
+`<Link>` (from `@adonisjs/inertia/react`) is a type-safe wrapper around Inertia's `Link`. Common patterns:
+
+```tsx
+// Plain href, no route type-check
+<Link href="/about">About</Link>
+
+// Type-safe route name
+<Link route="home">Home</Link>
+
+// Non-GET navigation
+<Link route="session.destroy" method="post">Logout</Link>
+
+// Route params
+<Link route="user.show" routeParams={{ id: 1 }}>View User</Link>
+
+// Body data on navigation
+<Link route="posts.store" method="post" data={{ title: 'Hi' }}>Create</Link>
+
+// Partial reload — only these props
+<Link route="home" only={['serverTime']} preserveScroll preserveState>
+  Refresh server time
+</Link>
+
+// Partial reload — all except these props
+<Link route="home" except={['heavyStat']}>Reload except one prop</Link>
+
+// Replace history instead of push
+<Link route="home" replace>Reload, no new history entry</Link>
+
+// Render as a different element
+<Link route="session.destroy" method="post" as="button">Logout</Link>
+
+// Prefetch on hover
+<Link route="dashboard" prefetch>Dashboard</Link>
+
+// Request lifecycle events
+<Link route="home" onStart={...} onFinish={...}>Refresh</Link>
+```
+
 ## Testing
 
 ```bash
