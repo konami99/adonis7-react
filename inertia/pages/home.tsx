@@ -1,4 +1,9 @@
+import { Link } from '@adonisjs/inertia/react'
+import { usePage } from '@inertiajs/react'
+
 export default function Home() {
+  const { serverTime } = usePage<{ serverTime?: string }>().props
+
   return (
     <>
       <div className="hero">
@@ -7,6 +12,13 @@ export default function Home() {
           Powered by Inertia and React, this setup blends server-driven routing with rich
           client-side interactivity — seamless, fast, and cohesive.
         </p>
+
+        <p>
+          Server time: <strong>{serverTime ?? '(not loaded yet)'}</strong>
+        </p>
+        <Link route="home" only={['serverTime']} preserveScroll preserveState>
+          Refresh server time
+        </Link>
       </div>
 
       <div className="cards">
